@@ -71,38 +71,25 @@ export const getNearbyInventory = async (req, res) => {
        eligibleCount: eligible.length,
      });
 
-     // Customer-facing availability contains ONLY serviceable nodes.
-     // Out-of-radius / unavailable nodes remain available through /debug.
+     // PRIVACY: this customer-facing endpoint exposes ONLY the distance of
+     // nearby dealers (plus express eligibility for serviceable ones).
+     // No dealer/node identity, ids, stock, pricing, offers or reasons are
+     // ever returned. Full diagnostics remain on the admin-only /debug route.
+     const toDistance = (value) => {
+       const km = Number(value);
+       return Number.isFinite(km) ? Math.round(km * 10) / 10 : null;
+     };
      return res.json({
        product: productId,
        requestedQuantity: qty,
        available: eligible.length > 0,
        candidates: eligible.map((candidate) => ({
-         node: candidate.nodeId,
-         nodeName: candidate.nodeName,
-         nodeType: candidate.nodeType,
-         dealer: candidate.dealerId,
-         dealerName: candidate.dealerName,
-         distanceKm: candidate.distanceKm,
-         serviceRadiusKm: candidate.serviceRadiusKm,
-         availableQuantity: candidate.availableQuantity,
-         expressEligible: candidate.expressEnabled,
-         sellingPrice: candidate.sellingPrice,
-         mrp: candidate.mrp,
-         inventory: candidate.inventoryId,
-         offer: candidate.offerId,
+         distanceKm: toDistance(candidate.distanceKm),
+         expressEligible: Boolean(candidate.expressEnabled),
        })),
-       // Kept for diagnostics/legacy consumers, but NEVER treated as
-       // available fulfillment nodes by the customer UI.
+       // Dealers outside the service area: distance only.
        alternatives: ineligible.map((candidate) => ({
-         node: candidate.nodeId,
-         nodeName: candidate.nodeName,
-         dealer: candidate.dealerId,
-         dealerName: candidate.dealerName,
-         distanceKm: candidate.distanceKm,
-         serviceRadiusKm: candidate.serviceRadiusKm,
-         availableQuantity: candidate.availableQuantity,
-         reason: candidate.reason,
+         distanceKm: toDistance(candidate.distanceKm),
        })),
        code: eligible.length > 0 ? 'fulfillment_available' : 'no_serviceable_inventory',
      });
