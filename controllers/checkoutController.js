@@ -4,6 +4,10 @@ import InventoryItem from '../models/InventoryItem.js';
 import { validateCheckout } from '../services/checkout/checkoutValidationService.js';
 import { releaseReservationsForSession } from '../services/inventory/reservationService.js';
 import { createOrderFromCheckout } from '../services/order/orderService.js';
+import {
+  resolveCustomerLocation,
+  CustomerLocationError,
+} from '../services/fulfillment/customerLocationService.js';
 
 const log = (event, payload = {}) => console.log(JSON.stringify({ event, ...payload, at: new Date().toISOString() }));
 
@@ -11,8 +15,23 @@ const log = (event, payload = {}) => console.log(JSON.stringify({ event, ...payl
     { latitude, longitude } — always the AUTHENTICATED user's own cart. */
 export const postValidateCheckout = async (req, res) => {
   try {
-    const { latitude, longitude } = req.body;
-    const result = await validateCheckout({ userId: req.user._id, latitude, longitude });
+    // Location = explicit { latitude, longitude } OR { addressId } of one of
+    // the authenticated user's saved addresses (geocoded + cached on demand).
+    let loc;
+    try {
+      loc = await resolveCustomerLocation({
+        userId: req.user._id,
+        addressId: req.body?.addressId,
+        latitude: req.body?.latitude,
+        longitude: req.body?.longitude,
+      });
+    } catch (locErr) {
+      if (locErr instanceof CustomerLocationError) {
+        return res.status(locErr.status).json({ success: false, code: locErr.code, message: locErr.message });
+      }
+      throw locErr;
+    }
+    const result = await validateCheckout({ userId: req.user._id, latitude: loc.latitude, longitude: loc.longitude });
 
     if (!result.success) {
       const status = result.code === 'INVALID_LOCATION' || result.code === 'EMPTY_CART' ? 400 : 409;

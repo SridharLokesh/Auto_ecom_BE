@@ -58,9 +58,28 @@ export const updateAddresses = async (req, res) => {
     if (addresses.length > 10)
       return res.status(400).json({ message: 'Maximum 10 addresses allowed' });
 
+    // If an address's text changed but the client resent its OLD coordinates,
+    // drop them so the address is re-located (geocoded) on next use.
+    const existing = await User.findById(req.user._id).select('addresses').lean();
+    const previousById = new Map((existing?.addresses || []).map((a) => [String(a._id), a]));
+    const norm = (v) => String(v || '').trim().toLowerCase();
+    const sanitized = addresses.map((a) => {
+      const prev = a?._id ? previousById.get(String(a._id)) : null;
+      if (!prev) return a;
+      const textChanged = ['street', 'city', 'state', 'pincode', 'country']
+        .some((k) => norm(a[k]) !== norm(prev[k]));
+      if (!textChanged) return a;
+      const sameCoords =
+        Number(a.latitude) === Number(prev.latitude) && Number(a.longitude) === Number(prev.longitude);
+      if (sameCoords || a.latitude == null || a.longitude == null) {
+        return { ...a, latitude: null, longitude: null };
+      }
+      return a;
+    });
+
     const user = await User.findByIdAndUpdate(
       req.user._id,
-      { addresses },
+      { addresses: sanitized },
       { new: true }
     ).select('-password');
     res.json(user);

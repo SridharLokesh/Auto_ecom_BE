@@ -92,11 +92,12 @@ export const findNearbyFulfillmentNodes = async ({
   latitude,
   longitude,
   maxRadiusKm = MAX_SEARCH_RADIUS_KM,
+  hardCapKm = MAX_SEARCH_RADIUS_KM, // only display-only lookups raise this
   extraMatch = {},
 } = {}) => {
   const { lat, lng } = validateCoordinates(latitude, longitude);
   const radius = Math.min(
-    MAX_SEARCH_RADIUS_KM,
+    hardCapKm,
     Math.max(0.1, Number(maxRadiusKm) || MAX_SEARCH_RADIUS_KM),
   );
 
