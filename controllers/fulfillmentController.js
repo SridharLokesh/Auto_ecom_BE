@@ -9,6 +9,11 @@ import {
 import { selectBestCandidate } from '../services/fulfillment/fulfillmentScoringService.js';
 import { buildFulfillmentPlan } from '../services/fulfillment/fulfillmentPlanBuilder.js';
 import { repairFulfillmentNodeLinks } from '../services/fulfillment/fulfillmentSyncService.js';
+import {
+  resolveCustomerLocation,
+  CustomerLocationError,
+} from '../services/fulfillment/customerLocationService.js';
+import { getDisplayDistancesForProduct } from '../services/fulfillment/displayDistanceService.js';
 /* ── helpers ─────────────────────────────────────────────────────────── */
 
 const parseLocationFromQuery = (query) => {
@@ -31,6 +36,11 @@ const parseLocationFromBody = (body) => {
 const invalidLocation = (res) =>
   res.status(400).json({ code: 'INVALID_LOCATION', message: 'Valid latitude and longitude are required.' });
 
+// Customer-facing location resolution: explicit coordinates OR a saved
+// addressId belonging to the authenticated user (geocoded + cached on demand).
+const sendLocationError = (res, err) =>
+  res.status(err.status || 400).json({ code: err.code, message: err.message });
+
 const log = (event, payload) => {
   // Structured, no PII beyond coarse coordinates the customer already
   // supplied for this request; never logs tokens.
@@ -49,8 +59,18 @@ export const getNearbyInventory = async (req, res) => {
      const product = await Product.findById(productId).select('_id title').lean();
      if (!product) return res.status(404).json({ message: 'Product not found' });
 
-     const loc = parseLocationFromQuery(req.query);
-     if (!loc) return invalidLocation(res);
+     let loc;
+     try {
+       loc = await resolveCustomerLocation({
+         userId: req.user._id,
+         addressId: req.query.addressId,
+         latitude: req.query.latitude,
+         longitude: req.query.longitude,
+       });
+     } catch (locErr) {
+       if (locErr instanceof CustomerLocationError) return sendLocationError(res, locErr);
+       throw locErr;
+     }
 
      const qty = Math.max(1, parseInt(quantity, 10) || 1);
 
@@ -64,11 +84,30 @@ export const getNearbyInventory = async (req, res) => {
 
      const ineligible = allCandidates.filter((candidate) => !candidate.isEligible);
 
+     // Display fallback: if NO dealer has a stock record at a nearby node
+     // (e.g. inventory not linked to a location yet), still show the
+     // distance of nearby dealers who actively SELL this product, using
+     // the dealer's own active, geo-located nodes. Distance only — this
+     // never marks the product as available/express and never touches
+     // checkout, which still validates real stock.
+     let offerOnlyDistances = [];
+     let fallbackMeta = null;
+     if (allCandidates.length === 0) {
+       const fallback = await getDisplayDistancesForProduct({
+         productId, latitude: loc.latitude, longitude: loc.longitude,
+       });
+       offerOnlyDistances = fallback.distances.map((km) => ({ distanceKm: km }));
+       fallbackMeta = fallback.meta;
+     }
+
      log('fulfillment.nearby-inventory', {
        productId,
        quantity: qty,
        candidateCount: allCandidates.length,
        eligibleCount: eligible.length,
+       locationSource: loc.source,
+       fallback: fallbackMeta, // why a product had no confirmed-stock dealer (server log only)
+       fallbackDistanceCount: offerOnlyDistances.length,
      });
 
      // PRIVACY: this customer-facing endpoint exposes ONLY the distance of
@@ -88,7 +127,7 @@ export const getNearbyInventory = async (req, res) => {
          expressEligible: Boolean(candidate.expressEnabled),
        })),
        // Dealers outside the service area: distance only.
-       alternatives: ineligible.map((candidate) => ({
+       alternatives: [...ineligible, ...offerOnlyDistances].map((candidate) => ({
          distanceKm: toDistance(candidate.distanceKm),
        })),
        code: eligible.length > 0 ? 'fulfillment_available' : 'no_serviceable_inventory',
@@ -144,8 +183,18 @@ export const selectFulfillment = async (req, res) => {
    { latitude, longitude } (or the legacy { customerLocation: {...} } shape) */
 export const getCartFulfillmentPlan = async (req, res) => {
   try {
-    const loc = parseLocationFromBody(req.body);
-    if (!loc) return invalidLocation(res);
+    let loc;
+    try {
+      loc = await resolveCustomerLocation({
+        userId: req.user._id,
+        addressId: req.body?.addressId,
+        latitude: req.body?.latitude ?? req.body?.customerLocation?.latitude,
+        longitude: req.body?.longitude ?? req.body?.customerLocation?.longitude,
+      });
+    } catch (locErr) {
+      if (locErr instanceof CustomerLocationError) return sendLocationError(res, locErr);
+      throw locErr;
+    }
 
     const cart = await Cart.findOne({ user: req.user._id }).lean();
     if (!cart || !cart.items?.length) {
