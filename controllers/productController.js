@@ -1,6 +1,7 @@
 import Product from '../models/Product.js';
 import Notification from '../models/Notification.js';
 import mongoose from 'mongoose';
+import InventoryItem from '../models/InventoryItem.js';
 import {
   ensureOfferAndInventoryForProduct,
   syncOfferAfterProductUpdate,
@@ -67,6 +68,33 @@ const parseArrayField = (value) => {
   return [];
 };
 
+// Product.stock is retained for legacy dealer/admin forms. Customer-facing
+// stock must come from the physical inventory rows, which are the source of
+// truth for dealer inventory. Sum available units across active locations.
+const withAvailableStock = async (products) => {
+  if (!products.length) return products;
+  const ids = products.map((product) => product._id);
+  const stocks = await InventoryItem.aggregate([
+    { $match: { product: { $in: ids }, isActive: true } },
+    { $group: {
+      _id: '$product',
+      stock: { $sum: { $max: [0, { $subtract: [
+        { $ifNull: ['$onHand', 0] },
+        { $add: [
+          { $ifNull: ['$reserved', 0] },
+          { $ifNull: ['$damaged', 0] },
+          { $ifNull: ['$blocked', 0] },
+        ] },
+      ] }] } },
+    } },
+  ]);
+  const stockByProduct = new Map(stocks.map(({ _id, stock }) => [String(_id), stock]));
+  return products.map((product) => ({
+    ...product,
+    stock: stockByProduct.get(String(product._id)) ?? product.stock ?? 0,
+  }));
+};
+
 // ── GET /api/products ─────────────────────────────────────────────────
 export const getProducts = async (req, res) => {
   try {
@@ -83,7 +111,7 @@ export const getProducts = async (req, res) => {
       .populate('dealer', 'dealerId businessName')
       .lean();
 
-    res.json({ products, total, page, pages: Math.ceil(total / limit) });
+    res.json({ products: await withAvailableStock(products), total, page, pages: Math.ceil(total / limit) });
   } catch (err) {
     console.error('[getProducts]', err);
     res.status(500).json({ message: err.message });
@@ -147,7 +175,7 @@ export const getProductsByCategory = async (req, res) => {
       .populate('dealer', 'dealerId businessName')
       .lean();
 
-    res.json({ products, total, page, pages: Math.ceil(total / limit) });
+    res.json({ products: await withAvailableStock(products), total, page, pages: Math.ceil(total / limit) });
   } catch (err) {
     console.error('[getProductsByCategory]', err);
     res.status(500).json({ message: err.message });
@@ -168,7 +196,8 @@ export const getProductById = async (req, res) => {
 
     product.viewCount = (product.viewCount || 0) + 1;
     await product.save();
-    res.json(product);
+    const [productWithStock] = await withAvailableStock([product.toObject()]);
+    res.json(productWithStock);
   } catch (err) {
     console.error('[getProductById]', err);
     res.status(500).json({ message: err.message });
