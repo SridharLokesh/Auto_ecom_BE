@@ -39,9 +39,7 @@ app.use(cors({
     'http://localhost:3000',
     'http://127.0.0.1:5173',
     'https://e-comauto.vercel.app',
-    'https://e-commerce-product-frontend-kappa.vercel.app',
-    'https://e-commerce-product-frontend-iybb4wr98-focushub360s-projects.vercel.app',
-    'https://e-commerce-product-frontend-pw8dmbaun-focushub360s-projects.vercel.app',
+    'https://autoecom-three.vercel.app'
     process.env.FRONTEND_URL,
   ].filter(Boolean),
   credentials: true,
